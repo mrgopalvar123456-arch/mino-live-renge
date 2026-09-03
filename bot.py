@@ -18,7 +18,9 @@ DEV_URL = "https://t.me/NETBOLDNETMAIR0"
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 MINO_CONSOLE_URL = f"https://minosms.com/console?api_key={MINO_API_KEY}"
 
-seen_sms_cache = deque(maxlen=3000)
+seen_sms_cache = deque(maxlen=5000)
+is_first_fetch = True
+
 system_stats = {
     "total_processed": 0,
     "last_fetch_count": 0,
@@ -44,7 +46,7 @@ E_ARROW      = tg_e('✈️', '5271801931814165886')
 E_CHECK      = tg_e('✔️', '5206607081334906820')
 E_CROSS      = tg_e('❌', '5210952531676504517')
 
-# ================= বিশ্বের ২৪০+ দেশের কান্ট্রি ডাটাবেস =================
+# ================= কান্ট্রি ডাটাবেস =================
 COUNTRIES = {
     "245": ("Guinea-Bissau", tg_e('🇬🇼', '5224705704153066489'), '🇬🇼'),
     "224": ("Guinea", tg_e('🇬🇳', '5222337588035073000'), '🇬🇳'),
@@ -61,10 +63,7 @@ COUNTRIES = {
     "232": ("Sierra Leone", tg_e('🇸🇱', '5224420995065983217'), '🇸🇱'),
     "233": ("Ghana", tg_e('🇬🇭', '5224511339703056124'), '🇬🇭'),
     "234": ("Nigeria", tg_e('🇳🇬', '5224723614166691638'), '🇳🇬'),
-    "235": ("Chad", '🇹🇩', '🇹🇩'),
-    "236": ("Central African Republic", '🇨🇫', '🇨🇫'),
     "237": ("Cameroon", tg_e('🇨🇲', '5222270788408717651'), '🇨🇲'),
-    "238": ("Cape Verde", '🇨🇻', '🇨🇻'),
     "240": ("Equatorial Guinea", tg_e('🇬🇶', '5222172811614762423'), '🇬🇶'),
     "241": ("Gabon", tg_e('🇬🇦', '5224669733801963467'), '🇬🇦'),
     "242": ("Republic of Congo", tg_e('🇨🇬', '5222104268231684600'), '🇨🇬'),
@@ -135,16 +134,46 @@ SERVICES = {
 
 STOP_WORDS = {"your", "use", "is", "dear", "the", "for", "code", "otp", "to", "account", "verification", "login", "password"}
 
-# কান্ট্রি ডিটেকশন
+# ================= নির্ভুল রেঞ্জ ডিটেক্টর (Unknown সমাধান) =================
+def extract_and_format_range(raw_val, sms_text):
+    clean_raw = str(raw_val).strip()
+
+    # ১. যদি API সরাসরি আগে থেকেই মাস্ক করা রেঞ্জ পাঠায় (যেমন: 26138XXX বা 255675***)
+    masked_match = re.search(r'(\d{4,9})[xX*]{2,5}', clean_raw)
+    if masked_match:
+        digits = masked_match.group(1)
+        return digits, digits + "XXX"
+
+    # ২. ডিজিট বের করা
+    digits = re.sub(r'\D', '', clean_raw)
+
+    # ৩. যদি raw ফিল্ডে কোনো নম্বর না থাকে, SMS থেকে নম্বর খোঁজা
+    if len(digits) < 4:
+        # স্পেস বা ড্যাশ সহ নম্বর খোঁজা (যেমন: +261 34 123 456)
+        sms_matches = re.findall(r'(?:\+|00)?\s*([1-9][0-9\s\-]{6,15}[0-9])', sms_text)
+        for cand in sms_matches:
+            c_digits = re.sub(r'\D', '', cand)
+            if 7 <= len(c_digits) <= 15:
+                digits = c_digits
+                break
+
+    # ৪. রেঞ্জ মাস্কিং (৪ বা ৫ ডিজিট হলেও আর Unknown হবে না)
+    if len(digits) >= 6:
+        return digits, digits[:6] + "XXX"
+    elif len(digits) == 5:
+        return digits, digits[:5] + "XXX"
+    elif len(digits) == 4:
+        return digits, digits[:4] + "XXX"
+
+    # যদি কিছুই না পাওয়া যায়
+    return "", "Unknown"
+
 def detect_country(num, raw_c=""):
     clean = re.sub(r'\D', '', str(num))
-    if clean.startswith("00"):
-        clean = clean[2:]
-
+    if clean.startswith("00"): clean = clean[2:]
     for code in sorted(COUNTRIES.keys(), key=len, reverse=True):
         if clean.startswith(code):
             return COUNTRIES[code][0], COUNTRIES[code][1], COUNTRIES[code][2], f"+{code}"
-
     if raw_c:
         rc = raw_c.lower().strip()
         if "bissau" in rc or rc == "gw":
@@ -152,10 +181,8 @@ def detect_country(num, raw_c=""):
         for code, data in COUNTRIES.items():
             if rc == data[0].lower() or rc in data[0].lower():
                 return data[0], data[1], data[2], f"+{code}"
-
     return "Global Region", tg_e('🌐', '5433880764770957207'), "🌐", ""
 
-# সার্ভিস ডিটেকশন
 def detect_service(sms):
     t = sms.lower()
     for k, v in SERVICES.items():
@@ -167,21 +194,16 @@ def detect_service(sms):
             return w.capitalize(), EMO_DEFAULT
     return "Service", EMO_DEFAULT
 
-# সম্পূর্ণ এরর-মুক্ত Mino API ফেচার
 def fetch_logs():
     headers = {"User-Agent": "Mozilla/5.0", "X-MINO-API-KEY": MINO_API_KEY}
     try:
         res = requests.get(MINO_CONSOLE_URL, headers=headers, timeout=10)
         if res.status_code != 200:
-            print(f"[Mino API Error] Status Code: {res.status_code}, Response: {res.text[:120]}")
             system_stats["last_error"] = f"Mino HTTP {res.status_code}"
             return []
-
-        # ১. JSON রেসপন্স টেস্ট
         try:
             data = res.json()
-            if isinstance(data, list):
-                return data
+            if isinstance(data, list): return data
             elif isinstance(data, dict):
                 for k in ["data", "logs", "messages", "result", "items"]:
                     if k in data and isinstance(data[k], list):
@@ -190,12 +212,10 @@ def fetch_logs():
         except Exception:
             pass
 
-        # ২. প্লেইন টেক্সট বা পাইপ (|) টেস্ট
         logs = []
         for line in res.text.splitlines():
             line = line.strip()
-            if not line or line.startswith("<"):
-                continue
+            if not line or line.startswith("<"): continue
             parts = [p.strip() for p in line.split("|")]
             if len(parts) >= 3:
                 logs.append({"phone": parts[0], "service": parts[1], "message": "|".join(parts[2:])})
@@ -204,54 +224,59 @@ def fetch_logs():
             else:
                 logs.append({"message": line})
         return logs
-
     except Exception as e:
-        print(f"[Fetch Exception] {e}")
         system_stats["last_error"] = str(e)
         return []
 
-# অটো ওটিপি ফরোয়ার্ডার
+# --- অটো ফরোয়ার্ডার ---
 def forwarder_worker():
-    print("🚀 Mino Forwarder Worker Started...")
+    global is_first_fetch
+    print("🚀 Mino Forwarder Worker Started (Range Detection Upgraded)...")
+
     while True:
         try:
             logs = fetch_logs()
             system_stats["last_fetch_count"] = len(logs)
 
-            if logs:
-                print(f"[Mino Poll] Fetched {len(logs)} logs from console.")
+            # প্রথমবার চালু হলে পুরনো এসএমএস ক্যাশে রেখে স্প্যাম আটকাবে
+            if is_first_fetch:
+                for item in logs:
+                    sms = str(item.get("message") or item.get("sms") or "").strip()
+                    raw_val = str(item.get("range") or item.get("number") or item.get("phone") or "").strip()
+                    if sms:
+                        seen_sms_cache.append(f"{raw_val}_{sms}")
+                is_first_fetch = False
+                print(f"[Initial Warmup] Cached {len(seen_sms_cache)} SMS.")
+                time.sleep(25)
+                continue
 
             for item in logs:
                 sms = ""
-                raw_num = ""
+                raw_val = ""
                 raw_c = ""
 
                 if isinstance(item, dict):
                     sms = str(item.get("message") or item.get("sms") or item.get("text") or "").strip()
-                    raw_num = str(item.get("number") or item.get("phone") or item.get("range") or "").strip()
-                    raw_c = str(item.get("country") or "").strip()
+                    # সব কয়টি সম্ভাব্য কী চেক করা
+                    raw_val = str(item.get("range") or item.get("number") or item.get("phone") or item.get("mobile") or "").strip()
+                    raw_c = str(item.get("country") or item.get("country_code") or "").strip()
                 elif isinstance(item, str):
                     sms = item.strip()
 
-                if not sms:
-                    continue
+                if not sms: continue
 
-                msg_hash = f"{raw_num}_{sms}"
-                if msg_hash in seen_sms_cache:
-                    continue
+                msg_hash = f"{raw_val}_{sms}"
+                if msg_hash in seen_sms_cache: continue
                 seen_sms_cache.append(msg_hash)
 
-                num = re.sub(r'\D', '', raw_num)
-                if not num:
-                    m = re.findall(r'\+?(\d{8,15})', sms)
-                    if m: num = m[0]
+                # আপগ্রেডেড স্মার্ট রেঞ্জ এক্সট্রাকশন (Unknown হবে না)
+                num_digits, display_range = extract_and_format_range(raw_val, sms)
 
-                c_name, c_flag_prem, c_flag_std, c_prefix = detect_country(num, raw_c)
+                c_name, c_flag_prem, c_flag_std, c_prefix = detect_country(num_digits, raw_c)
                 s_name, s_icon = detect_service(sms)
-                display_range = num[:6] + "XXX" if len(num) >= 6 else "Unknown"
                 safe_sms = html.escape(sms)
 
-                # স্ট্যাটাস ট্র্যাকার আপডেট
+                # স্ট্যাটাস আপডেট
                 system_stats["total_processed"] += 1
                 system_stats["services"][s_name] = system_stats["services"].get(s_name, 0) + 1
                 if display_range != "Unknown":
@@ -261,7 +286,6 @@ def forwarder_worker():
 
                 country_text = f"{c_name} ({c_prefix})" if c_prefix else c_name
 
-                # প্রিমিয়াম মেসেজ টেমপ্লেট
                 msg = (
                     f"<blockquote>{EMO_ACTIVE} <b>New Active Range</b> {EMO_ACTIVE}</blockquote>\n"
                     f"<blockquote>{EMO_COUNTRY} <b>Country:</b> {c_flag_prem} {country_text}</blockquote>\n"
@@ -278,44 +302,46 @@ def forwarder_worker():
                     btn_copy = types.InlineKeyboardButton("📋 Copy Range", callback_data=f"copy_{display_range}")
                 kb.add(btn_dev, btn_copy)
 
-                # মেসেজ পাঠানো (প্রিমিয়াম ফেইল করলে সাধারণ ইমোজি ব্যাকআপ)
-                try:
-                    bot.send_message(TARGET_GROUP, msg, reply_markup=kb)
-                    print(f"[Sent Successfully] {c_name} | {display_range} | {s_name}")
-                except Exception as tg_err:
-                    print(f"⚠️ [Telegram Send Error] {tg_err}")
-                    system_stats["last_error"] = str(tg_err)
-                    # ফলব্যাক সেন্ডার
+                # টেলিগ্রাম সেন্ড হ্যান্ডলার
+                sent = False
+                while not sent:
                     try:
-                        fallback_msg = (
-                            f"✅ <b>New Active Range</b> ✅\n"
-                            f"🌍 <b>Country:</b> {c_flag_std} {country_text}\n"
-                            f"📶 <b>Range:</b> <code>{display_range}</code>\n"
-                            f"📱 <b>Service:</b> {s_name}\n"
-                            f"📩 <b>Full SMS:</b> <code>{safe_sms}</code>"
-                        )
-                        bot.send_message(TARGET_GROUP, fallback_msg, reply_markup=kb)
-                        print(f"[Sent via Fallback] {c_name} | {display_range}")
-                    except Exception as fb_err:
-                        print(f"❌ [Critical Send Error to Group] {fb_err}")
-                        system_stats["last_error"] = f"Group Send Failed: {fb_err}"
+                        bot.send_message(TARGET_GROUP, msg, reply_markup=kb)
+                        print(f"[Sent] {c_name} | {display_range} | {s_name}")
+                        system_stats["last_error"] = "None"
+                        sent = True
+                        time.sleep(2.5)
+                    except telebot.apihelper.ApiTelegramException as api_err:
+                        if api_err.error_code == 429:
+                            retry_sec = api_err.result_json.get("parameters", {}).get("retry_after", 15)
+                            print(f"⚠️ [Telegram 429] Paused for {retry_sec + 2}s...")
+                            system_stats["last_error"] = f"Telegram 429: Paused for {retry_sec}s"
+                            time.sleep(retry_sec + 2)
+                        else:
+                            print(f"[Telegram Error] {api_err}")
+                            system_stats["last_error"] = str(api_err)
+                            break
+                    except Exception as e:
+                        print(f"[Send Error] {e}")
+                        system_stats["last_error"] = str(e)
+                        break
 
         except Exception as loop_err:
-            print(f"[Worker Exception] {loop_err}")
+            print(f"[Worker Error] {loop_err}")
             system_stats["last_error"] = str(loop_err)
 
-        time.sleep(3)
+        time.sleep(25)
 
-# ================= বট কমান্ড ও ডাইনামিক স্ট্যাটাস =================
+# ================= বট কমান্ড =================
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(types.KeyboardButton("📊 Status"))
     welcome = (
-        f"{EMO_ACTIVE} <b>Mino Live Stream Bot is Active!</b>\n\n"
-        f"✅ লাইভ ওটিপি স্ট্রিম গ্রুপে স্বয়ংক্রিয়ভাবে ফরওয়ার্ড হচ্ছে।\n"
-        f"📊 লাইভ ডাটা ও অ্যানালিটিক্স দেখতে নিচে <b>📊 Status</b> বাটনে চাপ দিন।"
+        f"{EMO_ACTIVE} <b>Mino Live Stream Bot Active!</b>\n\n"
+        f"✅ লাইভ ওটিপি স্ট্রিম প্রতি ২৫ সেকেন্ডের সেফটি লুপে চলছে।\n"
+        f"📊 লাইভ স্ট্যাটাস দেখতে নিচে <b>📊 Status</b> চাপুন।"
     )
     bot.send_message(message.chat.id, welcome, reply_markup=markup)
 
@@ -326,7 +352,7 @@ def copy_callback(call):
 
 @bot.message_handler(func=lambda msg: msg.text in ["📊 Status", "/status"])
 def status_handler(message):
-    wait_msg = bot.send_message(message.chat.id, "<i>⏳ Fetching real-time Mino system analytics...</i>")
+    wait_msg = bot.send_message(message.chat.id, "<i>⏳ Fetching real-time system analytics...</i>")
     try:
         total = system_stats["total_processed"]
         last_logs = system_stats["last_fetch_count"]
@@ -337,7 +363,7 @@ def status_handler(message):
         out += f"{E_PIN} <b>Total Streamed SMS:</b> {total}\n"
         out += f"{EMO_RANGE} <b>Last API Fetch:</b> {last_logs} entries\n"
         out += f"{E_SHIELD} <b>Target Group:</b> <code>{TARGET_GROUP}</code>\n"
-        out += f"{E_CHECK} <b>System Health:</b> {'Operational' if last_err == 'None' else 'Error Encountered'}</blockquote>\n"
+        out += f"{E_CHECK} <b>System Health:</b> {'Operational' if last_err == 'None' else 'Active (Protected)'}</blockquote>\n"
         out += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
 
         if svc_counts:
@@ -355,25 +381,31 @@ def status_handler(message):
                     out += f"  └ {E_SHIELD} Range: <code>{r_code}</code> {E_ARROW} <b>{count} Hits</b>\n"
                 out += "\n"
         else:
-            out += "<i>⏳ No active SMS forwarded yet. Monitoring stream...</i>\n\n"
+            out += "<i>⏳ Monitoring stream for new live OTPs...</i>\n\n"
 
         if last_err != "None":
             out += f"⚠️ <b>Last Error Log:</b> <code>{html.escape(last_err)}</code>\n"
 
         out += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-        out += f"{E_CHECK} <i>Live monitoring is active and healthy.</i>"
+        out += f"{E_CHECK} <i>Live monitoring is active and rate-limited safely.</i>"
 
         bot.edit_message_text(out, message.chat.id, wait_msg.message_id)
 
     except Exception as ex:
         bot.edit_message_text(f"{E_CROSS} Status Error: <code>{str(ex)}</code>", message.chat.id, wait_msg.message_id)
 
-# --- Render-এর জন্য Keep-Alive Server ---
+# --- Render-এর জন্য Web Server ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Mino Stream Bot Live 24/7!")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
