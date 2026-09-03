@@ -40,7 +40,8 @@ EMO_RANGE    = tg_e('📶', '6289791863381563934')
 EMO_SERVICE  = tg_e('📱', '6289813338218042779')
 EMO_SMS      = tg_e('📩', '5472239203590888751')
 EMO_DEFAULT  = tg_e('💎', '6291877744313635378')
-EMO_DEV      = tg_e('👨‍💻', '5251297255431892241')  # 👈 আপনার দেওয়া নতুন Developer ইমোজি
+EMO_DEV_ID   = '5251297255431892241' # 👈 Developer Premium Custom Emoji ID
+EMO_DEV      = tg_e('👨‍💻', EMO_DEV_ID)
 
 # স্ট্যাটাস ইমোজি
 E_STATS      = tg_e('📊', '5231200819986047254')
@@ -286,19 +287,22 @@ def forwarder_worker():
 
                 country_text = f"{c_name} ({c_prefix})" if c_prefix else c_name
 
-                # ================= আধুনিক ও স্লিক প্রিমিয়াম ডিজাইন =================
+                # ================= আধুনিক ও স্লিক প্রিমিয়াম ডিজাইন (Channel Line Removed) =================
                 msg = (
                     f"<blockquote>{EMO_ACTIVE} <b>MINO ACTIVE OTP STREAM</b> {EMO_ACTIVE}</blockquote>\n"
                     f"<blockquote>{EMO_COUNTRY} <b>Country:</b> {c_flag} {country_text}\n"
                     f"{EMO_RANGE} <b>Range:</b> <code>{display_range}</code>\n"
-                    f"{s_icon} <b>Service:</b> <b>{s_name}</b>\n"
-                    f"{EMO_DEV} <b>Channel:</b> <a href=\"{DEV_URL}\">NetBold Network</a></blockquote>\n"
+                    f"{s_icon} <b>Service:</b> <b>{s_name}</b></blockquote>\n"
                     f"<blockquote>{EMO_SMS} <b>Live SMS Content:</b>\n"
                     f"<code>{safe_sms}</code></blockquote>"
                 )
 
                 kb = types.InlineKeyboardMarkup(row_width=2)
-                btn_dev = types.InlineKeyboardButton("👨‍💻 Developer", url=DEV_URL)
+                try:
+                    btn_dev = types.InlineKeyboardButton("Developer", url=DEV_URL, icon_custom_emoji_id=EMO_DEV_ID)
+                except TypeError:
+                    btn_dev = types.InlineKeyboardButton("👨‍💻 Developer", url=DEV_URL)
+
                 try:
                     btn_copy = types.InlineKeyboardButton("📋 Copy Range", copy_text=types.CopyTextButton(text=display_range))
                 except:
@@ -374,7 +378,6 @@ def status_handler(message):
             top_services = sorted(svc_counts.items(), key=lambda x: x[1], reverse=True)[:6]
             for s_name, hits in top_services:
                 percent = (hits / total) * 100 if total > 0 else 0
-                # স্ট্যাটাস মেনুতেও সার্ভিস অনুযায়ী নিজস্ব প্রিমিয়াম ইমোজি লোড করা
                 s_icon = SERVICES.get(s_name.lower(), (s_name, EMO_DEFAULT))[1]
                 out += f"{s_icon} <b>{s_name}</b> {E_ARROW} <b>{hits} Hits</b> ({percent:.1f}%)\n"
 
