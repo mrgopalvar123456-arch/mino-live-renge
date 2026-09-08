@@ -10,7 +10,7 @@ import telebot
 from telebot import types
 
 # ================= কনফিগারেশন =================
-BOT_TOKEN = "8957580304:AAHUCJVN14EZMIZIFPHFn_8PnbYA3H4y7rE"
+BOT_TOKEN = "8957580304:AAG3VsYFF0QT8--W-FF3kcB-2irhDwPHUeU"
 MINO_API_KEY = "api_key_by_mino"   # 👈 আপনার Mino API Key বসান
 TARGET_GROUP = -1003920219065      # গ্রুপ আইডি
 DEV_URL = "https://t.me/NETBOLDNETMAIR0"
